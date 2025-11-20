@@ -1,17 +1,23 @@
+#!/usr/bin/env python
+
 """Flask web server with HTTP API for Piper."""
 
+from __future__ import annotations
+
 import argparse
+import base64
 import io
 import json
 import logging
 import wave
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 from urllib.request import urlopen
 
 from flask import Flask, request
+from flask_cors import CORS
 
-from . import PiperVoice, SynthesisConfig
+from . import AudioChunk, PiperVoice, SynthesisConfig
 from .download_voices import VOICES_JSON, download_voice
 
 _LOGGER = logging.getLogger()
@@ -102,6 +108,7 @@ def main() -> None:
 
     # Create web server
     app = Flask(__name__)
+    CORS(app)
 
     @app.route("/voices", methods=["GET"])
     def app_voices() -> Dict[str, Any]:
@@ -170,6 +177,118 @@ def main() -> None:
 
         return model_id
 
+    @app.route("/aligned", methods=["POST"])
+    def aligned():
+        data = json.loads(request.data)
+
+        text = str(data.get("input", "")).strip()
+
+        sentence_silence = data.get("sentence_silence", None)
+        sentence_silence = float(
+            args.sentence_silence if sentence_silence is None else sentence_silence
+        )
+        stream_requested = bool(data.get("stream", False))
+
+        voice = get_voice(data.get("voice", default_model_id))
+
+        def set_metadata(audio_chunk: AudioChunk, wav_file: wave.Wave_write):
+            wav_file.setframerate(audio_chunk.sample_rate)
+            wav_file.setsampwidth(audio_chunk.sample_width)
+            wav_file.setnchannels(audio_chunk.sample_channels)
+
+        def get_bytes(audio_chunk: AudioChunk):
+            silence = bytes(int(audio_chunk.sample_rate * sentence_silence * 2))
+            return audio_chunk.audio_int16_bytes + silence
+
+        def write_chunk(audio_chunk: AudioChunk, wav_file: wave.Wave_write):
+            wav_file.writeframes(get_bytes(audio_chunk))
+
+        if stream_requested:
+
+            def stream() -> Generator[bytes, None, None]:
+                num_samples = 0
+                for audio_chunk in voice.synthesize(text, include_alignments=True):
+                    with io.BytesIO() as wav_io:
+                        wav_file: wave.Wave_write = wave.open(wav_io, "wb")
+                        with wav_file:
+                            set_metadata(audio_chunk, wav_file)
+                            write_chunk(audio_chunk, wav_file)
+
+                        audio_b64 = base64.b64encode(wav_io.getvalue()).decode("utf-8")
+
+                    timestamps = []
+                    if audio_chunk.char_alignments is not None:
+                        for ca in audio_chunk.char_alignments:
+                            timestamps.append(
+                                {
+                                    "word": ca.substring,
+                                    "start_time": num_samples / audio_chunk.sample_rate,
+                                }
+                            )
+
+                            num_samples += ca.num_samples
+
+                    yield f"{json.dumps({
+                        "audio": audio_b64,
+                        "audio_format": "audio/wav",
+                        "timestamps": timestamps
+                    })}\n".encode(
+                        "utf-8"
+                    )
+
+                    num_samples += sentence_silence * audio_chunk.sample_rate
+
+            return (stream(), {"content-type": "application/jsonl"})
+
+        num_samples = 0
+        timestamps = []
+        with io.BytesIO() as wav_io:
+            wav_file: wave.Wave_write = wave.open(wav_io, "wb")
+            with wav_file:
+                wav_params_set = False
+                for audio_chunk in voice.synthesize(text, include_alignments=True):
+                    if not wav_params_set:
+                        set_metadata(audio_chunk, wav_file)
+                        wav_params_set = True
+                    write_chunk(audio_chunk, wav_file)
+                    if audio_chunk.char_alignments is not None:
+                        for ca in audio_chunk.char_alignments:
+                            timestamps.append(
+                                {
+                                    "word": ca.substring,
+                                    "start_time": num_samples / audio_chunk.sample_rate,
+                                }
+                            )
+                            num_samples += ca.num_samples
+
+            audio = wav_io.getvalue()
+
+        # base64 encode audio
+        audio_b64 = base64.b64encode(audio).decode("utf-8")
+
+        return {
+            "audio": audio_b64,
+            "audio_format": "audio/wav",
+            "timestamps": timestamps,
+        }
+
+    def get_voice(model_id: str):
+        voice = loaded_voices.get(model_id)
+        if voice is None:
+            for data_dir in args.data_dir:
+                maybe_model_path = Path(data_dir) / f"{model_id}.onnx"
+                if maybe_model_path.exists():
+                    _LOGGER.debug("Loading voice %s", model_id)
+                    voice = PiperVoice.load(maybe_model_path, use_cuda=args.cuda)
+                    loaded_voices[model_id] = voice
+                    break
+
+        if voice is None:
+            _LOGGER.warning("Voice not found: %s. Using default voice.", model_id)
+            voice = default_voice
+
+        return voice
+
     @app.route("/", methods=["POST"])
     def app_synthesize() -> bytes:
         """Synthesize audio from text.
@@ -192,20 +311,7 @@ def main() -> None:
 
         _LOGGER.debug(data)
 
-        model_id = data.get("voice", default_model_id)
-        voice = loaded_voices.get(model_id)
-        if voice is None:
-            for data_dir in args.data_dir:
-                maybe_model_path = Path(data_dir) / f"{model_id}.onnx"
-                if maybe_model_path.exists():
-                    _LOGGER.debug("Loading voice %s", model_id)
-                    voice = PiperVoice.load(maybe_model_path, use_cuda=args.cuda)
-                    loaded_voices[model_id] = voice
-                    break
-
-        if voice is None:
-            _LOGGER.warning("Voice not found: %s. Using default voice.", model_id)
-            voice = default_voice
+        voice = get_voice(data.get("voice", default_model_id))
 
         speaker_id: Optional[int] = data.get("speaker_id")
         if (voice.config.num_speakers > 1) and (speaker_id is None):

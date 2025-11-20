@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from piper import PiperVoice
 from piper.const import BOS, EOS
-from piper.phonemize_espeak import EspeakPhonemizer
+from piper.phonemize_espeak import EspeakClause, EspeakPhonemizer, EspeakSentence
 
 _DIR = Path(__file__).parent
 _TESTS_DIR = _DIR
@@ -22,6 +22,13 @@ def test_load_voice() -> None:
     assert voice.config.num_speakers == 1
     assert voice.config.phoneme_type == "espeak"
     assert voice.config.espeak_voice == "en-us"
+
+
+def test_phonemize_synthesize_zero() -> None:
+    """Test phonemizing and synthesizing zero case."""
+    voice = PiperVoice.load(_TEST_VOICE)
+    phonemes = voice.phonemize("")
+    assert phonemes == []
 
 
 def test_phonemize_synthesize() -> None:
@@ -104,7 +111,9 @@ def test_language_switch_flags_removed() -> None:
     """Test that (language) switch (flags) are removed."""
     phonemizer = EspeakPhonemizer()
     phonemes = phonemizer.phonemize("ar", "test")
-    assert phonemes == [["t", "ˈ", "ɛ", "s", "t"]]
+    assert phonemes == [
+        EspeakSentence([EspeakClause("test", ["t", "ˈ", "ɛ", "s", "t"])]),
+    ]
 
 
 def test_synthesize() -> None:

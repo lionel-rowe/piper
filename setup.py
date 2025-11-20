@@ -44,6 +44,8 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         "onnxruntime>=1,<2",
+        "regex>=2025.11.3",
+        "unicode-segment==0.4.2",
     ],
     extras_require={
         "train": [

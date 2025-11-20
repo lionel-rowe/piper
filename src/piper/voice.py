@@ -9,15 +9,25 @@ import unicodedata
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+from pprint import pprint
 from typing import Any, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import onnxruntime
+from typing_extensions import Literal
+from unicode_segment import WordSegmenter
+
+from piper.align import CharAlignment, PhonemeAlignment, align
 
 from .config import PhonemeType, PiperConfig, SynthesisConfig
 from .const import BOS, EOS, PAD
 from .phoneme_ids import phonemes_to_ids
-from .phonemize_espeak import ESPEAK_DATA_DIR, EspeakPhonemizer
+from .phonemize_espeak import (
+    ESPEAK_DATA_DIR,
+    EspeakClause,
+    EspeakPhonemizer,
+    EspeakSentence,
+)
 from .tashkeel import TashkeelDiacritizer
 
 _ESPEAK_PHONEMIZER: Optional[EspeakPhonemizer] = None
@@ -28,13 +38,6 @@ _MAX_WAV_VALUE = 32767.0
 _PHONEME_BLOCK_PATTERN = re.compile(r"(\[\[.*?\]\])")
 
 _LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class PhonemeAlignment:
-    phoneme: str
-    phoneme_ids: Sequence[int]
-    num_samples: int
 
 
 @dataclass
@@ -67,6 +70,9 @@ class AudioChunk:
 
     phoneme_alignments: Optional[list[PhonemeAlignment]] = None
     """Alignments between phonemes and audio samples."""
+
+    char_alignments: Optional[list[CharAlignment]] = None
+    """Alignments between input chars and audio samples."""
 
     # ---
 
@@ -168,6 +174,27 @@ class PiperVoice:
         :param text: Text to phonemize.
         :return: List of phonemes for each sentence.
         """
+        return self.get_phonemes_from_sentences(self.phonemize_clause_aligned(text))
+
+    def get_phonemes_from_sentences(
+        self, sentences: list[EspeakSentence]
+    ) -> list[list[str]]:
+        text_part_phonemes: list[list[str]] = []
+        for sentence in sentences:
+            text_part_phonemes.append(
+                [c for clause in sentence.clauses for c in clause.phonemes]
+            )
+
+        return text_part_phonemes
+
+    def phonemize_clause_aligned(self, text: str) -> list[EspeakSentence]:
+        """
+        Text to phonemes grouped by sentence > clause, with the original text chunk that produced them.
+
+        :param text: Text to phonemize.
+        :return: List of sentences, each containing list of clauses with their phonemes.
+        """
+
         global _ESPEAK_PHONEMIZER
 
         if self.config.phoneme_type == PhonemeType.TEXT:
@@ -177,59 +204,92 @@ class PiperVoice:
         if self.config.phoneme_type != PhonemeType.ESPEAK:
             raise ValueError(f"Unexpected phoneme type: {self.config.phoneme_type}")
 
-        phonemes: list[list[str]] = []
+        all_sentences: list[EspeakSentence] = []
+
         text_parts = _PHONEME_BLOCK_PATTERN.split(text)
+
         prev_raw_phonemes = False
         for i, text_part in enumerate(text_parts):
             if text_part.startswith("[["):
                 prev_raw_phonemes = True
 
-                # Phonemes
-                if not phonemes:
-                    # Start new sentence
-                    phonemes.append([])
+                if not all_sentences:
+                    all_sentences.append(EspeakSentence())
+                sentence = all_sentences[-1]
+
+                phonemes: list[str] = []
+
+                clause = EspeakClause(text_part, phonemes)
+                sentence.clauses.append(clause)
 
                 if (i > 0) and (text_parts[i - 1].endswith(" ")):
-                    phonemes[-1].append(" ")
+                    phonemes.append(" ")
 
-                phonemes[-1].extend(text_part[2:-2].strip())
+                phonemes.extend(
+                    list(unicodedata.normalize("NFD", text_part[2:-2].strip()))
+                )
 
                 if (i < (len(text_parts)) - 1) and (text_parts[i + 1].startswith(" ")):
-                    phonemes[-1].append(" ")
+                    phonemes.append(" ")
 
                 continue
+
+            original_text_part: Optional[str] = None
 
             # Arabic diacritization
             if (self.config.espeak_voice == "ar") and self.use_tashkeel:
                 if self.tashkeel_diacritizier is None:
                     self.tashkeel_diacritizier = TashkeelDiacritizer()
 
-                text_part = self.tashkeel_diacritizier(
+                tashkeeled = self.tashkeel_diacritizier(
                     text_part, taskeen_threshold=self.taskeen_threshold
                 )
+                if tashkeeled != text_part:
+                    original_text_part = text_part
+                    text_part = tashkeeled
 
             with _ESPEAK_PHONEMIZER_LOCK:
                 if _ESPEAK_PHONEMIZER is None:
                     _ESPEAK_PHONEMIZER = EspeakPhonemizer(self.espeak_data_dir)
 
-                text_part_phonemes = _ESPEAK_PHONEMIZER.phonemize(
+                sentences = _ESPEAK_PHONEMIZER.phonemize(
                     self.config.espeak_voice, text_part
                 )
 
-                if prev_raw_phonemes and text_part_phonemes:
-                    # Add to previous block of phonemes first if it came from [[ raw phonemes]]
-                    phonemes[-1].extend(text_part_phonemes[0])
-                    text_part_phonemes = text_part_phonemes[1:]
+                for sentence in sentences:
+                    if original_text_part is not None:
+                        # If text_part has been modified (e.g. by tashkeel),
+                        # intra-sentence clause boundaries may have changed,
+                        # so we just emit the full sentence as one clause.
+                        sentence = EspeakSentence(
+                            [
+                                EspeakClause(
+                                    original_text_part,
+                                    [
+                                        p
+                                        for clause in sentence.clauses
+                                        for p in clause.phonemes
+                                    ],
+                                )
+                            ]
+                        )
 
-                phonemes.extend(text_part_phonemes)
+                    if prev_raw_phonemes:
+                        # Add to previous sentence of phonemes first if it came from [[ raw phonemes]]
+                        prev = all_sentences[-1]
+                        prev.clauses.extend(sentence.clauses)
+
+                        prev_raw_phonemes = False
+                    else:
+                        all_sentences.append(sentence)
 
             prev_raw_phonemes = False
 
-        if phonemes and (not phonemes[-1]):
-            # Remove empty phonemes
-            phonemes.pop()
+        if all_sentences and (not all_sentences[-1].clauses):
+            # Remove empty sentence at end
+            all_sentences.pop()
 
-        return phonemes
+        return all_sentences
 
     def phonemes_to_ids(self, phonemes: list[str]) -> list[int]:
         """
@@ -256,10 +316,12 @@ class PiperVoice:
         if syn_config is None:
             syn_config = _DEFAULT_SYNTHESIS_CONFIG
 
-        sentence_phonemes = self.phonemize(text)
+        sentence_phonemes_aligned = self.phonemize_clause_aligned(text)
+        sentence_phonemes = self.get_phonemes_from_sentences(sentence_phonemes_aligned)
+
         _LOGGER.debug("text=%s, phonemes=%s", text, sentence_phonemes)
 
-        for phonemes in sentence_phonemes:
+        for i, phonemes in enumerate(sentence_phonemes):
             if not phonemes:
                 continue
 
@@ -340,6 +402,12 @@ class PiperVoice:
                     phoneme_alignments = None
                     _LOGGER.debug("Phoneme alignment failed")
 
+            char_alignments = (
+                None
+                if phoneme_alignments is None
+                else (list(align(phoneme_alignments, sentence_phonemes_aligned[i])))
+            )
+
             yield AudioChunk(
                 sample_rate=self.config.sample_rate,
                 sample_width=2,
@@ -349,6 +417,7 @@ class PiperVoice:
                 phoneme_ids=phoneme_ids,
                 phoneme_id_samples=phoneme_id_samples,
                 phoneme_alignments=phoneme_alignments,
+                char_alignments=char_alignments,
             )
 
     def synthesize_wav(

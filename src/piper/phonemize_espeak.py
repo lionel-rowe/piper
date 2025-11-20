@@ -2,11 +2,36 @@
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
 _DIR = Path(__file__).parent
 ESPEAK_DATA_DIR = _DIR / "espeak-ng-data"
+
+
+@dataclass
+class EspeakClause:
+    text: str
+    phonemes: list[str]
+
+    def __eq__(self, other):
+        return self.text == other.text and self.phonemes == other.phonemes
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.text!r}, {self.phonemes!r})"
+
+
+@dataclass
+class EspeakSentence:
+    def __init__(self, clauses: list[EspeakClause] = None):
+        self.clauses = clauses if clauses is not None else []
+
+    def __eq__(self, other):
+        return self.clauses == other.clauses
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.clauses!r})"
 
 
 class EspeakPhonemizer:
@@ -18,17 +43,35 @@ class EspeakPhonemizer:
 
         espeakbridge.initialize(str(espeak_data_dir))
 
-    def phonemize(self, voice: str, text: str) -> list[list[str]]:
+    def phonemize(self, voice: str, text: str) -> list[EspeakSentence]:
         """Text to phonemes grouped by sentence."""
         from . import espeakbridge  # avoid circular import
 
         espeakbridge.set_voice(voice)
 
-        all_phonemes: list[list[str]] = []
-        sentence_phonemes: list[str] = []
+        sentences: list[EspeakSentence] = []
+        sentence = EspeakSentence()
+        encoded = text.encode("utf-8")
+
+        # Next UTF-8 char after clause is pre-loaded into espeak after each clause,
+        # so we need to amend end_byte_index by its byte length
+        enqueued_next_char = ""
+        byte_index = 0
 
         clause_phonemes = espeakbridge.get_phonemes(text)
-        for phonemes_str, terminator_str, end_of_sentence in clause_phonemes:
+
+        for (
+            phonemes_str,
+            terminator_str,
+            end_of_sentence,
+            end_byte_index,
+        ) in clause_phonemes:
+            input_chunk = encoded[byte_index:end_byte_index].decode("utf-8")
+            byte_index = end_byte_index
+            clause_str = enqueued_next_char + input_chunk[:-1]
+
+            enqueued_next_char = input_chunk[-1] if input_chunk else ""
+
             # Filter out (lang) switch (flags).
             # These surround words from languages other than the current voice.
             phonemes_str = re.sub(r"\([^)]+\)", "", phonemes_str)
@@ -41,13 +84,23 @@ class EspeakPhonemizer:
 
             # Decompose phonemes into UTF-8 codepoints.
             # This separates accent characters into separate "phonemes".
-            sentence_phonemes.extend(list(unicodedata.normalize("NFD", phonemes_str)))
+            phonemes = list(unicodedata.normalize("NFD", phonemes_str))
+
+            clause = EspeakClause(
+                text=clause_str,
+                phonemes=phonemes,
+            )
+
+            sentence.clauses.append(clause)
 
             if end_of_sentence:
-                all_phonemes.append(sentence_phonemes)
-                sentence_phonemes = []
+                sentences.append(sentence)
+                sentence = EspeakSentence()
 
-        if sentence_phonemes:
-            all_phonemes.append(sentence_phonemes)
+        if sentence.clauses:
+            sentences.append(sentence)
 
-        return all_phonemes
+        if sentences:
+            sentences[-1].clauses[-1].text += enqueued_next_char
+
+        return sentences
