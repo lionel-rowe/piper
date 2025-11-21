@@ -42,7 +42,7 @@ def test_phonemize_synthesize() -> None:
         ["t", "ˈ", "ɛ", "s", "t", " ", "t", "ˈ", "u", "ː", "."],
     ]
 
-    phoneme_ids = [voice.phonemes_to_ids(ps) for ps in phonemes]
+    phoneme_ids = [voice.aligner.phonemes_to_ids(ps) for ps in phonemes]
 
     # Test 1.
     assert phoneme_ids[0] == [

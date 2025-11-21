@@ -217,8 +217,8 @@ def main() -> None:
                         audio_b64 = base64.b64encode(wav_io.getvalue()).decode("utf-8")
 
                     timestamps = []
-                    if audio_chunk.char_alignments is not None:
-                        for ca in audio_chunk.char_alignments:
+                    if audio_chunk.word_alignments is not None:
+                        for ca in audio_chunk.word_alignments:
                             timestamps.append(
                                 {
                                     "word": ca.substring,
@@ -251,8 +251,8 @@ def main() -> None:
                         set_metadata(audio_chunk, wav_file)
                         wav_params_set = True
                     write_chunk(audio_chunk, wav_file)
-                    if audio_chunk.char_alignments is not None:
-                        for ca in audio_chunk.char_alignments:
+                    if audio_chunk.word_alignments is not None:
+                        for ca in audio_chunk.word_alignments:
                             timestamps.append(
                                 {
                                     "word": ca.substring,

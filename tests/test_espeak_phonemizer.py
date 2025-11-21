@@ -11,7 +11,7 @@ def test_phonemize() -> None:
     """Sanity check for phonemizer."""
     phonemizer = EspeakPhonemizer()
     assert phonemizer.phonemize("en-us", "test") == [
-        EspeakSentence([EspeakClause("test", ["t", "ˈ", "ɛ", "s", "t"])]),
+        EspeakSentence([EspeakClause("test", list("tˈɛst"))]),
     ]
 
 
@@ -21,15 +21,13 @@ def test_phonemize_multiple_chunks() -> None:
     assert phonemizer.phonemize("en-us", "Hello, world. Hey there!") == [
         EspeakSentence(
             [
-                EspeakClause("Hello, ", ["h", "ə", "l", "ˈ", "o", "ʊ", ",", " "]),
-                EspeakClause("world. ", ["w", "ˈ", "ɜ", "ː", "l", "d", "."]),
+                EspeakClause("Hello, ", list("həlˈoʊ, ")),
+                EspeakClause("world. ", list("wˈɜːld.")),
             ]
         ),
         EspeakSentence(
             [
-                EspeakClause(
-                    "Hey there!", ["h", "ˈ", "e", "ɪ", " ", "ð", "ˈ", "ɛ", "ɹ", "!"]
-                ),
+                EspeakClause("Hey there!", list("hˈeɪ ðˈɛɹ!")),
             ]
         ),
     ]

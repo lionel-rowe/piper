@@ -1,5 +1,7 @@
 """Phonemization with espeak-ng."""
 
+from __future__ import annotations
+
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -16,18 +18,34 @@ class EspeakClause:
     phonemes: list[str]
 
     def __eq__(self, other):
+        if not isinstance(other, EspeakClause):
+            raise TypeError(
+                f"Cannot compare {self.__class__.__name__} with other types"
+            )
+        # e.g. different subclasses
+        if type(self) != type(other):
+            return False
         return self.text == other.text and self.phonemes == other.phonemes
 
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.text!r}, {self.phonemes!r})"
+
+@dataclass
+class RawPhonemeEspeakClause(EspeakClause):
+    content: str
 
 
 @dataclass
 class EspeakSentence:
-    def __init__(self, clauses: list[EspeakClause] = None):
-        self.clauses = clauses if clauses is not None else []
+    def __init__(self, clauses: list[EspeakClause] | None = None):
+        self.clauses = [] if clauses is None else clauses
 
     def __eq__(self, other):
+        if not isinstance(other, EspeakSentence):
+            raise TypeError(
+                f"Cannot compare {self.__class__.__name__} with other types"
+            )
+        # e.g. different subclasses
+        if type(self) != type(other):
+            return False
         return self.clauses == other.clauses
 
     def __repr__(self):

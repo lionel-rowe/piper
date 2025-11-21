@@ -45,7 +45,7 @@ setup(
     install_requires=[
         "onnxruntime>=1,<2",
         "regex>=2025.11.3",
-        "unicode-segment==0.4.2",
+        "unicode-segment==0.4.4",
     ],
     extras_require={
         "train": [
@@ -70,6 +70,7 @@ setup(
             "scikit-build<1",
             "cmake>=3.18,<4",
             "ninja>=1,<2",
+            "types-regex>=2025.11.3.20251106",
         ],
         "http": [
             "flask>=3,<4",
