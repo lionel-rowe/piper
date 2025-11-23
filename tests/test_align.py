@@ -510,3 +510,68 @@ def test_sloppy_word_boundaries():
 #             + Phoneme.EOS,
 #         ),
 #     ]
+
+
+def test_numerals():
+    # You have 123 friends"
+    # juː hav wˈɒnhˈʌndɹɪdən twˈɛnti θɹˈiː fɹˈɛndz
+
+    espeak_sentence = EspeakSentence(
+        [EspeakClause("You have 123 friends", list("juː hav wˈɒnhˈʌndɹɪdən twˈɛnti θɹˈiː fɹˈɛndz"))]
+    )
+
+    phoneme_alignments = [
+        PhonemeAlignment(phoneme="^", phoneme_ids=[-1], num_samples=Phoneme.BOS),
+        PhonemeAlignment(phoneme="j", phoneme_ids=[-1], num_samples=Phoneme.j),
+        PhonemeAlignment(phoneme="u", phoneme_ids=[-1], num_samples=Phoneme.u),
+        PhonemeAlignment(phoneme="ː", phoneme_ids=[-1], num_samples=Phoneme.LONG),
+        PhonemeAlignment(phoneme=" ", phoneme_ids=[-1], num_samples=Phoneme.SPACE),
+        PhonemeAlignment(phoneme="h", phoneme_ids=[-1], num_samples=Phoneme.h),
+        PhonemeAlignment(phoneme="a", phoneme_ids=[-1], num_samples=Phoneme.a),
+        PhonemeAlignment(phoneme="v", phoneme_ids=[-1], num_samples=Phoneme.v),
+        PhonemeAlignment(phoneme=" ", phoneme_ids=[-1], num_samples=Phoneme.SPACE),
+        PhonemeAlignment(phoneme="w", phoneme_ids=[-1], num_samples=Phoneme.w),
+        PhonemeAlignment(phoneme="ˈ", phoneme_ids=[-1], num_samples=Phoneme.STRESS),
+        PhonemeAlignment(phoneme="ɒ", phoneme_ids=[-1], num_samples=Phoneme.ɒ),
+        PhonemeAlignment(phoneme="n", phoneme_ids=[-1], num_samples=Phoneme.n),
+        PhonemeAlignment(phoneme="h", phoneme_ids=[-1], num_samples=Phoneme.h),
+        PhonemeAlignment(phoneme="ˈ", phoneme_ids=[-1], num_samples=Phoneme.STRESS),
+        PhonemeAlignment(phoneme="ʌ", phoneme_ids=[-1], num_samples=Phoneme.ʌ),
+        PhonemeAlignment(phoneme="n", phoneme_ids=[-1], num_samples=Phoneme.n),
+        PhonemeAlignment(phoneme="d", phoneme_ids=[-1], num_samples=Phoneme.d),
+        PhonemeAlignment(phoneme="ɹ", phoneme_ids=[-1], num_samples=Phoneme.ɹ),
+        PhonemeAlignment(phoneme="ɪ", phoneme_ids=[-1], num_samples=Phoneme.ɪ),
+        PhonemeAlignment(phoneme="d", phoneme_ids=[-1], num_samples=Phoneme.d),
+        PhonemeAlignment(phoneme="ə", phoneme_ids=[-1], num_samples=Phoneme.ə),
+        PhonemeAlignment(phoneme="n", phoneme_ids=[-1], num_samples=Phoneme.n),
+        PhonemeAlignment(phoneme=" ", phoneme_ids=[-1], num_samples=Phoneme.SPACE),
+        PhonemeAlignment(phoneme="t", phoneme_ids=[-1], num_samples=Phoneme.t),
+        PhonemeAlignment(phoneme="w", phoneme_ids=[-1], num_samples=Phoneme.w),
+        PhonemeAlignment(phoneme="ˈ", phoneme_ids=[-1], num_samples=Phoneme.STRESS),
+        PhonemeAlignment(phoneme="ɛ", phoneme_ids=[-1], num_samples=Phoneme.ɛ),
+        PhonemeAlignment(phoneme="n", phoneme_ids=[-1], num_samples=Phoneme.n),
+        PhonemeAlignment(phoneme="t", phoneme_ids=[-1], num_samples=Phoneme.t),
+        PhonemeAlignment(phoneme="i", phoneme_ids=[-1], num_samples=Phoneme.i),
+        PhonemeAlignment(phoneme=" ", phoneme_ids=[-1], num_samples=Phoneme.SPACE),
+        PhonemeAlignment(phoneme="θ", phoneme_ids=[-1], num_samples=Phoneme.θ),
+        PhonemeAlignment(phoneme="ɹ", phoneme_ids=[-1], num_samples=Phoneme.ɹ),
+        PhonemeAlignment(phoneme="ˈ", phoneme_ids=[-1], num_samples=Phoneme.STRESS),
+        PhonemeAlignment(phoneme="i", phoneme_ids=[-1], num_samples=Phoneme.i),
+        PhonemeAlignment(phoneme="ː", phoneme_ids=[-1], num_samples=Phoneme.LONG),
+        PhonemeAlignment(phoneme=" ", phoneme_ids=[-1], num_samples=Phoneme.SPACE),
+        PhonemeAlignment(phoneme="f", phoneme_ids=[-1], num_samples=Phoneme.f),
+        PhonemeAlignment(phoneme="ɹ", phoneme_ids=[-1], num_samples=Phoneme.ɹ),
+        PhonemeAlignment(phoneme="ˈ", phoneme_ids=[-1], num_samples=Phoneme.STRESS),
+        PhonemeAlignment(phoneme="ɛ", phoneme_ids=[-1], num_samples=Phoneme.ɛ),
+        PhonemeAlignment(phoneme="n", phoneme_ids=[-1], num_samples=Phoneme.n),
+        PhonemeAlignment(phoneme="d", phoneme_ids=[-1], num_samples=Phoneme.d),
+        PhonemeAlignment(phoneme="z", phoneme_ids=[-1], num_samples=Phoneme.z),
+        PhonemeAlignment(phoneme="$", phoneme_ids=[-1], num_samples=Phoneme.EOS),
+    ]
+
+    aligned = list(aligner.align(phoneme_alignments, espeak_sentence))
+
+    assert aligned == [
+    ]
+
+    
