@@ -14,7 +14,7 @@ import numpy as np
 import onnxruntime
 import regex as re
 
-from . import _word_alignment_utils
+from . import _word_alignment_utils as _w
 from .config import PhonemeType, PiperConfig, SynthesisConfig
 from .const import BOS, EOS, PAD
 from .phoneme_ids import phonemes_to_ids
@@ -377,13 +377,12 @@ class PiperVoice:
                     _LOGGER.debug("Phoneme alignment failed")
 
             word_alignments: list[WordAlignment] | None = None
+
             if phoneme_alignments is not None:
                 word_alignments = []
                 phoneme_alignments_offset = 0
                 for clause, clause_phonemes in phonemes:
-                    start, end = _word_alignment_utils.get_matched_portion(
-                        text[text_offset:], clause
-                    )
+                    start, end = _w.get_matched_portion(text[text_offset:], clause)
                     start += text_offset
                     end += text_offset
 
@@ -442,11 +441,13 @@ class PiperVoice:
         """
         word_alignments: list[WordAlignment] = []
 
-        word_segments = [
-            x
-            for x in _word_alignment_utils.word_segmenter.segment(clause)
-            if _word_alignment_utils.is_word_like(x[1])
-        ]
+        block_offset = 0
+        word_segments: list[tuple[int, str, bool]] = []
+        for i, block in enumerate(_PHONEME_BLOCK_PATTERN.split(clause)):
+            for x in _w.word_segmenter.segment(block):
+                if _w.is_word_like(x[1]):
+                    word_segments.append((x[0] + block_offset, x[1], i % 2 == 1))
+            block_offset += len(block)
 
         phoneme_str = "".join([pa.phoneme for pa in phoneme_alignments])
 
@@ -455,24 +456,25 @@ class PiperVoice:
 
         individual_word_phonemes: list[str] = []
 
-        for i, word in word_segments:
-            word_phonemes = "".join(
-                p for a in self.phonemize(word) for s in a for p in s
-            )
+        for i, (_, word, is_raw) in enumerate(word_segments):
+            if is_raw:
+                word_phonemes = word
+            else:
+                word_phonemes = "".join(
+                    p for a in self.phonemize(word) for s in a for p in s
+                )
 
-            if i == 0:
-                word_phonemes == BOS + word_phonemes
+                if i == 0:
+                    word_phonemes = BOS + word_phonemes
 
-            if i == len(word_segments) - 1:
-                word_phonemes += EOS
-            elif len(word_segments) > 1:
-                word_phonemes += " "
+                if i == len(word_segments) - 1:
+                    word_phonemes += EOS
+                elif len(word_segments) > 1:
+                    word_phonemes += " "
 
             individual_word_phonemes.append(word_phonemes)
 
-            found_index = _word_alignment_utils.dmp.match_main(
-                phoneme_str, word_phonemes, search_location
-            )
+            found_index = _w.dmp.match_main(phoneme_str, word_phonemes, search_location)
 
             phoneme_start_indexes.append(found_index)
 
@@ -495,12 +497,10 @@ class PiperVoice:
                 word=word,
                 num_samples=0,
             )
-            for i, word in word_segments
+            for i, word, _ in word_segments
         ]
 
-        diffs = _word_alignment_utils.dmp.diff_main(
-            phoneme_str, "".join(individual_word_phonemes)
-        )
+        diffs = _w.dmp.diff_main(phoneme_str, "".join(individual_word_phonemes))
         unassigned_samples_running_total = 0
 
         # Track position in phoneme_alignments and word_alignments
@@ -577,7 +577,7 @@ class PiperVoice:
 
         # Distribute unassigned evenly across all words according to how many phonemes were dropped
         total_dropped_phonemes = sum(dropped_phonemes_per_word)
-        extra_samples_per_dropped_phoneme = _word_alignment_utils.int_divide_to_n_parts(
+        extra_samples_per_dropped_phoneme = _w.int_divide_to_n_parts(
             unassigned_samples_running_total, total_dropped_phonemes
         )
 
@@ -596,7 +596,7 @@ class PiperVoice:
                         dropped_phoneme_index += dropped_count
             else:
                 # just reassign equally
-                extra_samples_per_word = _word_alignment_utils.int_divide_to_n_parts(
+                extra_samples_per_word = _w.int_divide_to_n_parts(
                     unassigned_samples_running_total, len(word_alignments)
                 )
                 for i, extra_samples in enumerate(extra_samples_per_word):
