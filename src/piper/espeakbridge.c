@@ -56,6 +56,11 @@ static PyObject *py_get_phonemes(PyObject *self, PyObject *args) {
 
     PyObject *phonemes_and_terminators = PyList_New(0);
 
+    int total_len = strlen(text);
+    if (total_len == 0) {
+        return phonemes_and_terminators;
+    }
+
     while (text != NULL) {
         int terminator = 0;
         char *terminator_str = "";
@@ -63,6 +68,10 @@ static PyObject *py_get_phonemes(PyObject *self, PyObject *args) {
         const char *phonemes = espeak_TextToPhonemesWithTerminator(
             (const void **)&text, espeakCHARS_AUTO, espeakPHONEMES_IPA,
             &terminator);
+
+        int byte_cursor = text == NULL
+            ? total_len
+            : total_len - strlen(text);
 
         // Categorize terminator
         terminator &= 0x000FFFFF;
@@ -82,11 +91,13 @@ static PyObject *py_get_phonemes(PyObject *self, PyObject *args) {
         }
 
         PyList_Append(phonemes_and_terminators,
-                      Py_BuildValue("(ssO)", phonemes, terminator_str,
+                      Py_BuildValue("(ssOI)", phonemes, terminator_str,
                                     (terminator & CLAUSE_TYPE_SENTENCE) ==
                                             CLAUSE_TYPE_SENTENCE
                                         ? Py_True
-                                        : Py_False));
+                                        : Py_False,
+                                    byte_cursor
+                                ));
     }
 
     return phonemes_and_terminators;

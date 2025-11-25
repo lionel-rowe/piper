@@ -3,7 +3,6 @@
 import itertools
 import json
 import logging
-import re
 import threading
 import unicodedata
 import wave
@@ -13,7 +12,9 @@ from typing import Any, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import onnxruntime
+import regex as re
 
+from . import _word_alignment_utils
 from .config import PhonemeType, PiperConfig, SynthesisConfig
 from .const import BOS, EOS, PAD
 from .phoneme_ids import phonemes_to_ids
@@ -34,6 +35,13 @@ _LOGGER = logging.getLogger(__name__)
 class PhonemeAlignment:
     phoneme: str
     phoneme_ids: Sequence[int]
+    num_samples: int
+
+
+@dataclass
+class WordAlignment:
+    start_index: int
+    word: str
     num_samples: int
 
 
@@ -67,6 +75,8 @@ class AudioChunk:
 
     phoneme_alignments: Optional[list[PhonemeAlignment]] = None
     """Alignments between phonemes and audio samples."""
+
+    word_alignments: Optional[list[WordAlignment]] = None
 
     # ---
 
@@ -168,16 +178,35 @@ class PiperVoice:
         :param text: Text to phonemize.
         :return: List of phonemes for each sentence.
         """
+        phonemized = self._phonemize_clausewise(text)
+        out: list[list[str]] = []
+
+        for sentence in phonemized:
+            sentence_phonemes: list[str] = []
+            for clause in sentence:
+                _, clause_phonemes = clause
+                sentence_phonemes.extend(clause_phonemes)
+            out.append(sentence_phonemes)
+
+        return out
+
+    def _phonemize_clausewise(self, text: str) -> list[list[tuple[str, list[str]]]]:
+        """
+        Text to phonemes grouped by sentence and clause, including input text for each clause.
+
+        :param text: Text to phonemize.
+        :return: `text[sentence[clause[text_content, phonemes]]]`
+        """
         global _ESPEAK_PHONEMIZER
 
         if self.config.phoneme_type == PhonemeType.TEXT:
             # Phonemes = codepoints
-            return [list(unicodedata.normalize("NFD", text))]
+            return [[(text, list(unicodedata.normalize("NFD", text)))]]
 
         if self.config.phoneme_type != PhonemeType.ESPEAK:
             raise ValueError(f"Unexpected phoneme type: {self.config.phoneme_type}")
 
-        phonemes: list[list[str]] = []
+        phonemes: list[list[tuple[str, list[str]]]] = []
         text_parts = _PHONEME_BLOCK_PATTERN.split(text)
         prev_raw_phonemes = False
         for i, text_part in enumerate(text_parts):
@@ -189,13 +218,18 @@ class PiperVoice:
                     # Start new sentence
                     phonemes.append([])
 
-                if (i > 0) and (text_parts[i - 1].endswith(" ")):
-                    phonemes[-1].append(" ")
+                sentence = phonemes[-1]
+                clause_phonemes: list[str] = []
+                clause_text = text_part
+                sentence.append((clause_text, clause_phonemes))
 
-                phonemes[-1].extend(text_part[2:-2].strip())
+                if (i > 0) and (text_parts[i - 1].endswith(" ")):
+                    clause_phonemes.append(" ")
+
+                clause_phonemes.extend(text_part[2:-2].strip())
 
                 if (i < (len(text_parts)) - 1) and (text_parts[i + 1].startswith(" ")):
-                    phonemes[-1].append(" ")
+                    clause_phonemes.append(" ")
 
                 continue
 
@@ -212,7 +246,7 @@ class PiperVoice:
                 if _ESPEAK_PHONEMIZER is None:
                     _ESPEAK_PHONEMIZER = EspeakPhonemizer(self.espeak_data_dir)
 
-                text_part_phonemes = _ESPEAK_PHONEMIZER.phonemize(
+                text_part_phonemes = _ESPEAK_PHONEMIZER._phonemize_clausewise(
                     self.config.espeak_voice, text_part
                 )
 
@@ -256,14 +290,16 @@ class PiperVoice:
         if syn_config is None:
             syn_config = _DEFAULT_SYNTHESIS_CONFIG
 
-        sentence_phonemes = self.phonemize(text)
+        sentence_phonemes = self._phonemize_clausewise(text)
         _LOGGER.debug("text=%s, phonemes=%s", text, sentence_phonemes)
 
+        text_offset = 0
         for phonemes in sentence_phonemes:
             if not phonemes:
                 continue
 
-            phoneme_ids = self.phonemes_to_ids(phonemes)
+            phonemes_flat = [p for _, c in phonemes for p in c]
+            phoneme_ids = self.phonemes_to_ids(phonemes_flat)
 
             phoneme_id_samples: Optional[np.ndarray] = None
             audio_result = self.phoneme_ids_to_audio(
@@ -300,7 +336,7 @@ class PiperVoice:
                 phoneme_id_idx = 0
                 phoneme_alignments = []
                 alignment_failed = False
-                for phoneme in itertools.chain([BOS], phonemes, [EOS]):
+                for phoneme in itertools.chain([BOS], phonemes_flat, [EOS]):
                     expected_ids = self.config.phoneme_id_map.get(phoneme, [])
 
                     ids_to_check: Sequence[int]
@@ -340,16 +376,233 @@ class PiperVoice:
                     phoneme_alignments = None
                     _LOGGER.debug("Phoneme alignment failed")
 
+            word_alignments: list[WordAlignment] | None = None
+            if phoneme_alignments is not None:
+                word_alignments = []
+                phoneme_alignments_offset = 0
+                for clause, clause_phonemes in phonemes:
+                    start, end = _word_alignment_utils.get_matched_portion(
+                        text[text_offset:], clause
+                    )
+                    start += text_offset
+                    end += text_offset
+
+                    clause = text[text_offset:end]
+
+                    text_offset = end
+
+                    phoneme_alignments_end_offset = phoneme_alignments_offset + len(
+                        clause_phonemes
+                    )
+                    clause_phoneme_alignments = phoneme_alignments[
+                        phoneme_alignments_offset:phoneme_alignments_end_offset
+                    ]
+                    phoneme_alignments_offset = phoneme_alignments_end_offset
+
+                    word_alignments.extend(
+                        self._reconcile_word_alignments(
+                            clause, clause_phoneme_alignments, start
+                        )
+                    )
+
+            # make up any dropped samples
+            if word_alignments is not None and phoneme_alignments is not None:
+                sw = sum(w.num_samples for w in word_alignments)
+                sp = sum(pa.num_samples for pa in phoneme_alignments)
+
+                if sw < sp:
+                    word_alignments[-1].num_samples += sp - sw
+                elif sw > sp:
+                    raise ValueError(f"word samples {sw} > phoneme samples {sp}")
+
             yield AudioChunk(
                 sample_rate=self.config.sample_rate,
                 sample_width=2,
                 sample_channels=1,
                 audio_float_array=audio,
-                phonemes=phonemes,
+                phonemes=phonemes_flat,
                 phoneme_ids=phoneme_ids,
                 phoneme_id_samples=phoneme_id_samples,
                 phoneme_alignments=phoneme_alignments,
+                word_alignments=word_alignments,
             )
+
+    def _reconcile_word_alignments(
+        self,
+        clause: str,
+        phoneme_alignments: list[PhonemeAlignment],
+        text_offset: int,
+    ) -> list[WordAlignment]:
+        """
+        Reconcile word alignments from phoneme alignments.
+
+        :param text: Original input text.
+        :param phoneme_alignments: List of phoneme alignments.
+        :return: Tuple of: (list of word alignments, chars consumed).
+        """
+        word_alignments: list[WordAlignment] = []
+
+        word_segments = [
+            x
+            for x in _word_alignment_utils.word_segmenter.segment(clause)
+            if _word_alignment_utils.is_word_like(x[1])
+        ]
+
+        phoneme_str = "".join([pa.phoneme for pa in phoneme_alignments])
+
+        phoneme_start_indexes: list[int] = []
+        search_location = 0
+
+        individual_word_phonemes: list[str] = []
+
+        for i, word in word_segments:
+            word_phonemes = "".join(
+                p for a in self.phonemize(word) for s in a for p in s
+            )
+
+            if i == 0:
+                word_phonemes == BOS + word_phonemes
+
+            if i == len(word_segments) - 1:
+                word_phonemes += EOS
+            elif len(word_segments) > 1:
+                word_phonemes += " "
+
+            individual_word_phonemes.append(word_phonemes)
+
+            found_index = _word_alignment_utils.dmp.match_main(
+                phoneme_str, word_phonemes, search_location
+            )
+
+            phoneme_start_indexes.append(found_index)
+
+            search_location = found_index + len(word_phonemes)
+            if search_location >= len(phoneme_str) - 1:
+                break
+
+        if not word_segments:
+            return [
+                WordAlignment(
+                    start_index=text_offset,
+                    word=clause,
+                    num_samples=sum(pa.num_samples for pa in phoneme_alignments),
+                )
+            ]
+
+        word_alignments = [
+            WordAlignment(
+                start_index=text_offset + i,
+                word=word,
+                num_samples=0,
+            )
+            for i, word in word_segments
+        ]
+
+        diffs = _word_alignment_utils.dmp.diff_main(
+            phoneme_str, "".join(individual_word_phonemes)
+        )
+        unassigned_samples_running_total = 0
+
+        # Track position in phoneme_alignments and word_alignments
+        phoneme_alignment_idx = 0
+        word_alignment_idx = 0
+
+        # Track how many phonemes we've consumed from the current word
+        current_word_phonemes_consumed = 0
+        current_word_phonemes_length = (
+            len(individual_word_phonemes[0]) if individual_word_phonemes else 0
+        )
+
+        dropped_phonemes_per_word = [0] * len(word_alignments)
+
+        # Process each diff operation
+        for diff_op, diff_text in diffs:
+            if diff_op == 0:  # EQUAL - match found
+                # Assign samples to corresponding words
+                for _ in diff_text:
+                    # All characters consume phoneme alignments
+                    if phoneme_alignment_idx < len(phoneme_alignments):
+                        num_samples = phoneme_alignments[
+                            phoneme_alignment_idx
+                        ].num_samples
+                        if word_alignment_idx < len(word_alignments):
+                            word_alignments[
+                                word_alignment_idx
+                            ].num_samples += num_samples
+                        else:
+                            # No more words, accumulate as unassigned
+                            unassigned_samples_running_total += num_samples
+                        phoneme_alignment_idx += 1
+
+                    current_word_phonemes_consumed += 1
+                    # Check if we've exhausted the current word's phonemes
+                    if (
+                        current_word_phonemes_consumed >= current_word_phonemes_length
+                        and word_alignment_idx < len(word_alignments) - 1
+                    ):
+                        word_alignment_idx += 1
+                        current_word_phonemes_consumed = 0
+                        current_word_phonemes_length = (
+                            len(individual_word_phonemes[word_alignment_idx])
+                            if word_alignment_idx < len(individual_word_phonemes)
+                            else 0
+                        )
+
+            elif diff_op == -1:  # DELETE - in phoneme_str but not in word phonemes
+                # Skip phonemes and accumulate their samples as unassigned
+                for _ in diff_text:
+                    if phoneme_alignment_idx < len(phoneme_alignments):
+                        unassigned_samples_running_total += phoneme_alignments[
+                            phoneme_alignment_idx
+                        ].num_samples
+                        phoneme_alignment_idx += 1
+
+            elif diff_op == 1:  # INSERT - in word phonemes but not in phoneme_str
+                for _ in diff_text:
+                    dropped_phonemes_per_word[word_alignment_idx] += 1
+
+                    current_word_phonemes_consumed += 1
+                    # Check if we've exhausted the current word's phonemes
+                    if (
+                        current_word_phonemes_consumed >= current_word_phonemes_length
+                        and word_alignment_idx < len(word_alignments) - 1
+                    ):
+                        word_alignment_idx += 1
+                        current_word_phonemes_consumed = 0
+                        current_word_phonemes_length = (
+                            len(individual_word_phonemes[word_alignment_idx])
+                            if word_alignment_idx < len(individual_word_phonemes)
+                            else 0
+                        )
+
+        # Distribute unassigned evenly across all words according to how many phonemes were dropped
+        total_dropped_phonemes = sum(dropped_phonemes_per_word)
+        extra_samples_per_dropped_phoneme = _word_alignment_utils.int_divide_to_n_parts(
+            unassigned_samples_running_total, total_dropped_phonemes
+        )
+
+        if unassigned_samples_running_total > 0:
+            if total_dropped_phonemes > 0:
+                dropped_phoneme_index = 0
+                for i, dropped_count in enumerate(dropped_phonemes_per_word):
+                    if dropped_count > 0:
+                        extra_samples = sum(
+                            extra_samples_per_dropped_phoneme[
+                                dropped_phoneme_index : dropped_phoneme_index
+                                + dropped_count
+                            ]
+                        )
+                        word_alignments[i].num_samples += extra_samples
+                        dropped_phoneme_index += dropped_count
+            else:
+                # just reassign equally
+                extra_samples_per_word = _word_alignment_utils.int_divide_to_n_parts(
+                    unassigned_samples_running_total, len(word_alignments)
+                )
+                for i, extra_samples in enumerate(extra_samples_per_word):
+                    word_alignments[i].num_samples += extra_samples
+
+        return word_alignments
 
     def synthesize_wav(
         self,

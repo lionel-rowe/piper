@@ -44,6 +44,9 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         "onnxruntime>=1,<2",
+        "diff-match-patch>=20241021",
+        "regex>=2025.11.3",
+        "unicode-segment==0.4.4",
     ],
     extras_require={
         "train": [
@@ -71,6 +74,7 @@ setup(
         ],
         "http": [
             "flask>=3,<4",
+			"flask-cors>=6.0.1",
         ],
         "alignment": [
             "onnx>=1,<2",
